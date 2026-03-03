@@ -1,12 +1,797 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Interview Scoresheet · Eazi Does It</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Interview Scoresheet · Eazi Does It</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-database-compat.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f0f11; color: #e8e4de; font-family: 'DM Sans', sans-serif; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #1a1a1f; }
+    ::-webkit-scrollbar-thumb { background: #3a3a45; border-radius: 3px; }
+    input, textarea, select { font-family: inherit; }
+    button { cursor: pointer; font-family: inherit; }
+    .fade-in { animation: fadeIn 0.4s ease forwards; }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+    .pulse { animation: pulse 2s infinite; display: inline-block; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    details summary { list-style: none; }
+    details summary::-webkit-details-marker { display: none; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── Firebase ─────────────────────────────────────────────────────────────────
+firebase.initializeApp({
+  apiKey: "AIzaSyDlmaD-tlLZmaEpnXbn1hbYFytuq-LALYU",
+  authDomain: "eazi-does-it.firebaseapp.com",
+  databaseURL: "https://eazi-does-it-default-rtdb.firebaseio.com",
+  projectId: "eazi-does-it",
+  storageBucket: "eazi-does-it.firebasestorage.app",
+  messagingSenderId: "114958368582",
+  appId: "1:114958368582:web:078306d98ba4bd893e6f47"
+});
+const db = firebase.database();
+
+const MODEL = "claude-sonnet-4-20250514";
+
+const RUBRIC = [
+  { score:1, label:"Poor",      desc:"Vague, hypothetical — no clear example" },
+  { score:2, label:"Weak",      desc:"Example lacks detail, minimal results" },
+  { score:3, label:"Competent", desc:"All elements present, acceptable" },
+  { score:4, label:"Strong",    desc:"Detailed, thoughtful, strong results" },
+  { score:5, label:"Excellent", desc:"High-impact, proactive, mastery shown" },
+];
+
+const getRec = (pct) => {
+  if (pct >= 0.8) return { label:"Strong Hire", color:"#22c55e", icon:"⭐" };
+  if (pct >= 0.6) return { label:"Hire",        color:"#86efac", icon:"✅" };
+  if (pct >= 0.4) return { label:"Borderline",  color:"#fbbf24", icon:"⚠️" };
+  return             { label:"Do Not Hire",  color:"#ef4444", icon:"❌" };
+};
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+function ScorePill({ value, onChange }) {
+  return (
+    <div style={{display:"flex",gap:6}}>
+      {[1,2,3,4,5].map(n => (
+        <button key={n} onClick={() => onChange(n)} style={{
+          width:36,height:36,borderRadius:"50%",border:"2px solid",
+          borderColor: value===n ? "#c9a96e":"#2e2e38",
+          background: value===n ? "#c9a96e":"transparent",
+          color: value===n ? "#0f0f11":"#888",
+          fontWeight:600,fontSize:14,transition:"all 0.15s"
+        }}>{n}</button>
+      ))}
+    </div>
+  );
+}
+
+function Bar({ pct, color="#c9a96e", height=6 }) {
+  return (
+    <div style={{background:"#2e2e38",borderRadius:99,height,overflow:"hidden"}}>
+      <div style={{width:`${Math.min(pct*100,100)}%`,height:"100%",background:color,borderRadius:99,transition:"width 0.5s"}} />
+    </div>
+  );
+}
+
+function Input({ value, onChange, placeholder, style={} }) {
+  return (
+    <input value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+      style={{background:"#1a1a1f",border:"1.5px solid #2e2e38",borderRadius:8,
+        padding:"12px 16px",color:"#e8e4de",fontSize:15,outline:"none",width:"100%",...style}} />
+  );
+}
+
+function Textarea({ value, onChange, placeholder, rows=3, style={} }) {
+  return (
+    <textarea value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={rows}
+      style={{background:"#1a1a1f",border:"1px solid #2e2e38",borderRadius:8,
+        padding:"10px 14px",color:"#e8e4de",fontSize:14,outline:"none",
+        resize:"vertical",width:"100%",lineHeight:1.6,...style}} />
+  );
+}
+
+function Btn({ onClick, disabled, children, variant="primary", style={} }) {
+  const styles = {
+    primary: { background: disabled?"#2e2e38":"#c9a96e", color: disabled?"#555":"#0f0f11" },
+    outline:  { background:"transparent", color:"#e8e4de", border:"2px solid #2e2e38" },
+  };
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      border:"none",borderRadius:8,padding:"13px 28px",fontWeight:600,
+      fontSize:15,transition:"all 0.2s",cursor:disabled?"default":"pointer",
+      ...styles[variant],...style
+    }}>{children}</button>
+  );
+}
+
+function Label({ children }) {
+  return <div style={{fontSize:12,color:"#888",letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>{children}</div>;
+}
+
+function Card({ children, style={} }) {
+  return (
+    <div style={{background:"#1a1a1f",border:"1px solid #2e2e38",borderRadius:14,padding:"22px 24px",...style}}>
+      {children}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LANDING
+// ═══════════════════════════════════════════════════════════════════════════════
+function Landing({ onSetup, onJoin }) {
+  return (
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24}}>
+      <div style={{textAlign:"center",maxWidth:540}} className="fade-in">
+        <div style={{fontSize:12,letterSpacing:4,color:"#c9a96e",textTransform:"uppercase",marginBottom:16}}>Eazi Does It · Interview Intelligence</div>
+        <h1 style={{fontFamily:"'DM Serif Display',serif",fontSize:"clamp(2.5rem,6vw,3.8rem)",lineHeight:1.1,marginBottom:20}}>
+          Live Panel<br /><em style={{color:"#c9a96e"}}>Scoresheet</em>
+        </h1>
+        <p style={{color:"#888",lineHeight:1.8,marginBottom:48,fontSize:16}}>
+          Upload a job description, let AI generate your interview scoresheet,<br />
+          then share live links so all panelists can score in real time.
+        </p>
+        <div style={{display:"flex",gap:16,justifyContent:"center",flexWrap:"wrap"}}>
+          <Btn onClick={onSetup}>+ New Interview Session</Btn>
+          <Btn onClick={onJoin} variant="outline">Join as Panelist</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SETUP
+// ═══════════════════════════════════════════════════════════════════════════════
+function Setup({ onComplete }) {
+  const [jd, setJd] = useState("");
+  const [candidate, setCandidate] = useState("");
+  const [num, setNum] = useState(5);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState("");
+  const fileRef = useRef();
+
+  const handleFile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setStatus("Reading file…");
+    const toBase64 = f => new Promise((res,rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result.split(",")[1]);
+      r.onerror = rej;
+      r.readAsDataURL(f);
+    });
+    try {
+      const b64 = await toBase64(file);
+      setStatus("Extracting content with AI…");
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ model:MODEL, max_tokens:2000,
+          messages:[{ role:"user", content:[
+            {type:"document", source:{type:"base64", media_type:"application/pdf", data:b64}},
+            {type:"text", text:"Extract and return the full text of this job description. Plain text only, no markdown."}
+          ]}]
+        })
+      });
+      const data = await resp.json();
+      setJd(data.content?.map(c=>c.text||"").join("\n")||"");
+      setStatus("JD loaded ✓");
+    } catch { setStatus("Could not parse — please paste the JD below."); }
+  };
+
+  const generate = async () => {
+    if (!jd.trim()) return;
+    setLoading(true);
+    setStatus("Generating tailored scoresheet…");
+    try {
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ model:MODEL, max_tokens:4000,
+          messages:[{ role:"user", content:`You are an expert HR consultant. Based on this job description, create an interview scoresheet in JSON.
+
+JOB DESCRIPTION:
+${jd}
+
+Return ONLY valid JSON (no markdown, no backticks):
+{
+  "role": "Job title",
+  "sections": [
+    {
+      "id": "s1",
+      "title": "Section title",
+      "maxScore": 30,
+      "questions": [
+        { "id": "q1", "text": "Behavioural interview question?" }
+      ]
+    }
+  ]
+}
+
+Rules:
+- 3–5 sections based on the JD (Key Responsibilities, Competencies, KPIs, Culture, Role-Play if relevant)
+- 4–6 questions per section, each scored 1–5
+- maxScore = questions × 5
+- All questions must be STAR-based behavioural: "Tell me about a time...", "Describe a situation..."
+- Make questions specific to this exact role and industry`
+        }]
+        })
+      });
+      const data = await resp.json();
+      const raw = data.content?.map(c=>c.text||"").join("")||"";
+      const ss = JSON.parse(raw.replace(/```json|```/g,"").trim());
+      ss.totalMax = ss.sections.reduce((a,s)=>a+s.maxScore,0);
+      onComplete({ scoresheet:ss, candidate, num });
+    } catch(e) {
+      setStatus("Error generating — please try again.");
+      console.error(e);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{minHeight:"100vh",maxWidth:680,margin:"0 auto",padding:"40px 24px"}} className="fade-in">
+      <div style={{fontSize:12,letterSpacing:3,color:"#c9a96e",textTransform:"uppercase",marginBottom:32}}>New Session</div>
+      <h2 style={{fontFamily:"'DM Serif Display',serif",fontSize:32,marginBottom:32}}>Configure Interview</h2>
+      <div style={{display:"flex",flexDirection:"column",gap:22}}>
+        <div><Label>Candidate Name</Label><Input value={candidate} onChange={setCandidate} placeholder="e.g. Jane Smith" /></div>
+        <div>
+          <Label>Number of Panelists</Label>
+          <select value={num} onChange={e=>setNum(Number(e.target.value))}
+            style={{background:"#1a1a1f",border:"1.5px solid #2e2e38",borderRadius:8,padding:"12px 16px",color:"#e8e4de",fontSize:15,outline:"none"}}>
+            {[2,3,4,5,6,7,8].map(n=><option key={n} value={n}>{n} Panelists</option>)}
+          </select>
+        </div>
+        <div>
+          <Label>Job Description</Label>
+          <button onClick={()=>fileRef.current.click()} style={{
+            background:"#1a1a1f",border:"1.5px solid #2e2e38",borderRadius:8,
+            padding:"10px 20px",color:"#c9a96e",fontSize:14,fontWeight:500,marginBottom:12,display:"block"
+          }}>📄 Upload PDF / Word</button>
+          <input ref={fileRef} type="file" accept=".pdf,.doc,.docx" onChange={handleFile} style={{display:"none"}} />
+          <Textarea value={jd} onChange={setJd} placeholder="Or paste the job description here…" rows={10} />
+        </div>
+        {status && <div style={{fontSize:13,color:"#c9a96e"}}>{status}</div>}
+        <Btn onClick={generate} disabled={loading||!jd.trim()} style={{width:"100%",padding:"15px"}}>
+          {loading ? <><span className="pulse">●</span> Generating with AI…</> : "✨ Generate Scoresheet"}
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SESSION READY
+// ═══════════════════════════════════════════════════════════════════════════════
+function SessionReady({ session, onDashboard, onPreview }) {
+  const [copied, setCopied] = useState(null);
+  const base = window.location.href.split("?")[0];
+
+  const copy = (text, key) => {
+    navigator.clipboard.writeText(text).then(()=>{ setCopied(key); setTimeout(()=>setCopied(null),2000); });
+  };
+
+  return (
+    <div style={{minHeight:"100vh",maxWidth:660,margin:"0 auto",padding:"40px 24px"}} className="fade-in">
+      <Card style={{textAlign:"center"}}>
+        <div style={{fontSize:48,marginBottom:16}}>🎉</div>
+        <h2 style={{fontFamily:"'DM Serif Display',serif",fontSize:28,marginBottom:8}}>Session Created!</h2>
+        <p style={{color:"#888",marginBottom:10}}>Send each panelist their unique link below.</p>
+        <div style={{background:"#0f0f11",borderRadius:8,padding:"10px 16px",marginBottom:28,display:"inline-block"}}>
+          <span style={{fontSize:12,color:"#666"}}>Session ID: </span>
+          <strong style={{fontFamily:"monospace",color:"#c9a96e",fontSize:13}}>{session.id}</strong>
+        </div>
+
+        <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:28,textAlign:"left"}}>
+          {session.panelists.map((p,i) => {
+            const link = `${base}?session=${session.id}&panelist=${p.id}`;
+            return (
+              <div key={i} style={{background:"#0f0f11",border:"1px solid #2e2e38",borderRadius:10,padding:"14px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
+                <div>
+                  <div style={{fontSize:11,color:"#555",marginBottom:3}}>Panelist {i+1}</div>
+                  <div style={{fontFamily:"monospace",fontSize:11,color:"#c9a96e",wordBreak:"break-all"}}>{link}</div>
+                </div>
+                <button onClick={()=>copy(link,p.id)} style={{
+                  background: copied===p.id?"#22c55e":"#2e2e38",border:"none",
+                  borderRadius:6,padding:"8px 14px",color:"#e8e4de",fontSize:12,flexShrink:0,cursor:"pointer"
+                }}>{copied===p.id?"✓":"Copy"}</button>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{display:"flex",gap:12,justifyContent:"center",flexWrap:"wrap"}}>
+          <Btn onClick={onDashboard}>📊 Open Dashboard</Btn>
+          <Btn onClick={onPreview} variant="outline">Preview Scoresheet</Btn>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SCORESHEET
+// ═══════════════════════════════════════════════════════════════════════════════
+function Scoresheet({ panelistId, sessionId, session, scoresheet }) {
+  const [data, setData] = useState({});
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(null);
+  const timer = useRef(null);
+
+  useEffect(() => {
+    if (!sessionId || !panelistId) return;
+    db.ref(`sessions/${sessionId}/responses/${panelistId}`).get().then(snap => {
+      if (snap.exists()) { const d = snap.val(); setData(d); setName(d.name||""); }
+    });
+  }, [sessionId, panelistId]);
+
+  const save = async (d) => {
+    setSaving(true);
+    try {
+      await db.ref(`sessions/${sessionId}/responses/${panelistId}`).set({...d, name, updatedAt:Date.now()});
+      setSaved(new Date().toLocaleTimeString());
+    } catch(e) { console.error(e); }
+    setSaving(false);
+  };
+
+  const update = (patch) => {
+    const next = {...data,...patch};
+    setData(next);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(()=>save(next), 1500);
+  };
+
+  const setScore = (sk,qk,v) => update({scores:{...data.scores,[`${sk}_${qk}`]:v}});
+  const setNote  = (sk,qk,v) => update({notes:{...data.notes,[`${sk}_${qk}`]:v}});
+  const setSecComment = (sk,v) => update({sectionComments:{...data.sectionComments,[sk]:v}});
+
+  if (!scoresheet || !session) return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:"#555"}}>Loading…</div>
+  );
+
+  const secScores = scoresheet.sections.map(s=>({
+    ...s, total: s.questions.reduce((a,q)=>a+(data.scores?.[`${s.id}_${q.id}`]||0),0)
+  }));
+  const total = secScores.reduce((a,s)=>a+s.total,0);
+  const max = scoresheet.totalMax;
+  const pct = max ? total/max : 0;
+  const rec = getRec(pct);
+
+  return (
+    <div style={{maxWidth:760,margin:"0 auto",padding:"32px 20px 100px"}} className="fade-in">
+      {/* Header */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12,marginBottom:24}}>
+        <div>
+          <div style={{fontSize:11,letterSpacing:3,color:"#c9a96e",textTransform:"uppercase",marginBottom:6}}>Interview Scoresheet</div>
+          <h1 style={{fontFamily:"'DM Serif Display',serif",fontSize:26,marginBottom:4}}>{scoresheet.role}</h1>
+          {session.candidateName && <div style={{color:"#888",fontSize:14}}>Candidate: <strong style={{color:"#e8e4de"}}>{session.candidateName}</strong></div>}
+        </div>
+        <div style={{fontSize:12,color:saving?"#c9a96e":"#444"}}>
+          {saving ? <><span className="pulse">●</span> Saving…</> : saved ? `✓ Saved ${saved}` : "Auto-saves as you type"}
+        </div>
+      </div>
+
+      <Card style={{marginBottom:28}}>
+        <Label>Your Name</Label>
+        <Input value={name} onChange={setName} placeholder="Enter your name…" onBlur={()=>save(data)} />
+      </Card>
+
+      <details style={{marginBottom:28,background:"#1a1a1f",border:"1px solid #2e2e38",borderRadius:10,padding:"14px 20px"}}>
+        <summary style={{cursor:"pointer",fontSize:13,color:"#888",letterSpacing:1}}>▸ SCORING RUBRIC</summary>
+        <div style={{display:"flex",flexWrap:"wrap",gap:14,marginTop:14}}>
+          {RUBRIC.map(r=>(
+            <div key={r.score} style={{display:"flex",gap:8,alignItems:"center"}}>
+              <div style={{width:28,height:28,borderRadius:"50%",background:"#c9a96e",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:13,color:"#0f0f11",flexShrink:0}}>{r.score}</div>
+              <div><div style={{fontSize:13,fontWeight:600}}>{r.label}</div><div style={{fontSize:11,color:"#666"}}>{r.desc}</div></div>
+            </div>
+          ))}
+        </div>
+      </details>
+
+      {secScores.map((sec,si)=>(
+        <div key={sec.id} style={{marginBottom:40}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <h2 style={{fontFamily:"'DM Serif Display',serif",fontSize:20}}>{si+1}. {sec.title}</h2>
+            <div style={{textAlign:"right",minWidth:80}}>
+              <div style={{fontWeight:700,fontSize:18}}>{sec.total}<span style={{color:"#555",fontSize:13}}>/{sec.maxScore}</span></div>
+              <Bar pct={sec.maxScore?sec.total/sec.maxScore:0} />
+            </div>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {sec.questions.map((q,qi)=>{
+              const k=`${sec.id}_${q.id}`;
+              const s=data.scores?.[k]||0;
+              return (
+                <Card key={q.id}>
+                  <div style={{fontSize:12,color:"#c9a96e",marginBottom:4,fontWeight:500}}>Q{qi+1}</div>
+                  <div style={{fontSize:15,lineHeight:1.6,marginBottom:14}}>{q.text}</div>
+                  <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",marginBottom:10}}>
+                    <ScorePill value={s} onChange={v=>setScore(sec.id,q.id,v)} />
+                    {s>0 && <span style={{fontSize:13,color:"#888"}}>{RUBRIC[s-1]?.label}</span>}
+                  </div>
+                  <Textarea value={data.notes?.[k]||""} onChange={v=>setNote(sec.id,q.id,v)} placeholder="Notes / Evidence…" rows={2} style={{background:"#0f0f11"}} />
+                </Card>
+              );
+            })}
+            <div>
+              <Label>Section Comment</Label>
+              <Textarea value={data.sectionComments?.[sec.id]||""} onChange={v=>setSecComment(sec.id,v)} placeholder="Overall section observations…" rows={2} />
+            </div>
+          </div>
+        </div>
+      ))}
+
+      <Card style={{marginBottom:24}}>
+        <h2 style={{fontFamily:"'DM Serif Display',serif",fontSize:22,marginBottom:20}}>Final Summary</h2>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 0",borderBottom:"1px solid #2e2e38",marginBottom:20,flexWrap:"wrap",gap:12}}>
+          <div>
+            <div style={{fontSize:13,color:"#888",marginBottom:4}}>Total Score</div>
+            <div style={{fontFamily:"'DM Serif Display',serif",fontSize:40}}>{total}<span style={{color:"#555",fontSize:18}}>/{max}</span></div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:26,fontWeight:700}}>{(pct*100).toFixed(0)}%</div>
+            <div style={{fontSize:15,color:rec.color,fontWeight:600}}>{rec.icon} {rec.label}</div>
+          </div>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <div><Label>Key Strengths</Label><Textarea value={data.strengths||""} onChange={v=>update({strengths:v})} placeholder="What stood out positively…" style={{background:"#0f0f11"}} /></div>
+          <div><Label>Areas of Concern</Label><Textarea value={data.concerns||""} onChange={v=>update({concerns:v})} placeholder="Any gaps or red flags…" style={{background:"#0f0f11"}} /></div>
+          <div>
+            <Label>Your Recommendation</Label>
+            <div style={{display:"flex",gap:10,flexWrap:"wrap",marginTop:4}}>
+              {["Strong Hire","Hire","Borderline","Do Not Hire"].map(r=>(
+                <button key={r} onClick={()=>update({recommendation:r})} style={{
+                  padding:"10px 18px",borderRadius:8,fontSize:14,fontWeight:500,cursor:"pointer",
+                  border:`2px solid ${data.recommendation===r?"#c9a96e":"#2e2e38"}`,
+                  background: data.recommendation===r?"#c9a96e22":"transparent",
+                  color: data.recommendation===r?"#c9a96e":"#888"
+                }}>{r}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      <Btn onClick={()=>save(data)} style={{width:"100%",padding:16}}>
+        {saving?"Saving…":"💾 Save Scoresheet"}
+      </Btn>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════
+function Dashboard({ sessionId, session, scoresheet }) {
+  const [responses, setResponses] = useState({});
+  const [tab, setTab] = useState("overview");
+
+  useEffect(()=>{
+    if (!sessionId) return;
+    const ref = db.ref(`sessions/${sessionId}/responses`);
+    ref.on("value", snap => setResponses(snap.exists()?snap.val():{}));
+    return ()=>ref.off();
+  },[sessionId]);
+
+  if (!scoresheet||!session) return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:"#555"}}>Loading…</div>
+  );
+
+  const max = scoresheet.totalMax;
+  const panelists = session.panelists.map((p,i)=>{
+    const r = responses[p.id]||{};
+    const secs = scoresheet.sections.map(s=>({
+      ...s, total:s.questions.reduce((a,q)=>a+(r.scores?.[`${s.id}_${q.id}`]||0),0)
+    }));
+    const total = secs.reduce((a,s)=>a+s.total,0);
+    const pct = max?total/max:0;
+    return {...p, data:r, name:r.name||`Panelist ${i+1}`, secs, total, pct, active:total>0};
+  });
+
+  const active = panelists.filter(p=>p.active);
+  const avgPct = active.length ? active.reduce((a,p)=>a+p.pct,0)/active.length : 0;
+  const panRec = getRec(avgPct);
+
+  const secAvgs = scoresheet.sections.map(s=>({
+    ...s, avg: active.length ? active.reduce((a,p)=>a+(p.secs.find(x=>x.id===s.id)?.total||0),0)/active.length : 0
+  }));
+
+  return (
+    <div style={{maxWidth:980,margin:"0 auto",padding:"32px 20px 100px"}} className="fade-in">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:16,marginBottom:36}}>
+        <div>
+          <div style={{fontSize:11,letterSpacing:3,color:"#c9a96e",textTransform:"uppercase",marginBottom:8}}>Panel Dashboard</div>
+          <h1 style={{fontFamily:"'DM Serif Display',serif",fontSize:28,marginBottom:4}}>{scoresheet.role}</h1>
+          {session.candidateName && <div style={{color:"#888"}}>Candidate: <strong style={{color:"#e8e4de"}}>{session.candidateName}</strong></div>}
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8,background:"#1a1a1f",border:"1px solid #2e2e38",borderRadius:10,padding:"10px 16px",fontSize:13,color:"#888"}}>
+          <span className="pulse" style={{color:"#22c55e"}}>●</span> Live · {active.length}/{panelists.length} submitted
+        </div>
+      </div>
+
+      {active.length>0 && (
+        <Card style={{marginBottom:28,border:`2px solid ${panRec.color}33`,display:"flex",gap:24,alignItems:"center",flexWrap:"wrap"}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:11,color:"#888",letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Panel Recommendation</div>
+            <div style={{fontFamily:"'DM Serif Display',serif",fontSize:28,color:panRec.color}}>{panRec.icon} {panRec.label}</div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:11,color:"#888",marginBottom:4}}>Panel Average</div>
+            <div style={{fontFamily:"'DM Serif Display',serif",fontSize:48,lineHeight:1}}>{(avgPct*100).toFixed(0)}<span style={{fontSize:20,color:"#555"}}>%</span></div>
+            <div style={{fontSize:13,color:"#888"}}>{active.length} panelist{active.length!==1?"s":""} scored</div>
+          </div>
+        </Card>
+      )}
+
+      <div style={{display:"flex",gap:4,marginBottom:28,background:"#1a1a1f",borderRadius:10,padding:4,width:"fit-content"}}>
+        {["overview","comparison","comments"].map(t=>(
+          <button key={t} onClick={()=>setTab(t)} style={{
+            padding:"8px 20px",borderRadius:7,border:"none",fontSize:14,fontWeight:500,cursor:"pointer",
+            background:tab===t?"#c9a96e":"transparent",
+            color:tab===t?"#0f0f11":"#888",textTransform:"capitalize"
+          }}>{t}</button>
+        ))}
+      </div>
+
+      {tab==="overview" && (
+        <div className="fade-in">
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(170px,1fr))",gap:12,marginBottom:28}}>
+            {secAvgs.map(s=>(
+              <Card key={s.id} style={{padding:"16px 18px"}}>
+                <div style={{fontSize:12,color:"#888",marginBottom:8}}>{s.title}</div>
+                <div style={{fontWeight:700,fontSize:22,marginBottom:8}}>{s.avg.toFixed(1)}<span style={{color:"#555",fontSize:13}}>/{s.maxScore}</span></div>
+                <Bar pct={s.maxScore?s.avg/s.maxScore:0} />
+              </Card>
+            ))}
+          </div>
+          <h3 style={{fontFamily:"'DM Serif Display',serif",fontSize:18,marginBottom:14}}>Panelist Scores</h3>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {panelists.map((p,i)=>{
+              const r=getRec(p.pct);
+              return (
+                <Card key={p.id} style={{display:"flex",gap:16,alignItems:"center",flexWrap:"wrap",padding:"14px 20px"}}>
+                  <div style={{width:36,height:36,borderRadius:"50%",background:"#2e2e38",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,color:"#c9a96e",flexShrink:0}}>{i+1}</div>
+                  <div style={{flex:1,minWidth:100}}>
+                    <div style={{fontWeight:600,marginBottom:2}}>{p.name}</div>
+                    {p.data.recommendation && <div style={{fontSize:12,color:"#666"}}>Rec: {p.data.recommendation}</div>}
+                  </div>
+                  {p.active ? (
+                    <>
+                      <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
+                        {p.secs.map(s=>(
+                          <div key={s.id} style={{textAlign:"center"}}>
+                            <div style={{fontSize:11,color:"#555",marginBottom:2}}>{s.title.split(" ")[0]}</div>
+                            <div style={{fontWeight:600,fontSize:15}}>{s.total}<span style={{color:"#555",fontSize:11}}>/{s.maxScore}</span></div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{textAlign:"right",minWidth:80}}>
+                        <div style={{fontWeight:700,fontSize:20}}>{p.total}<span style={{color:"#555",fontSize:12}}>/{max}</span></div>
+                        <div style={{fontSize:13,color:r.color}}>{r.icon} {r.label}</div>
+                      </div>
+                    </>
+                  ) : <div style={{fontSize:13,color:"#444"}}>Not yet submitted</div>}
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {tab==="comparison" && (
+        <div className="fade-in">
+          {active.length===0 ? <div style={{color:"#555",textAlign:"center",padding:"40px 0"}}>No scores yet.</div> : (
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"separate",borderSpacing:"0 6px",fontSize:13}}>
+                <thead>
+                  <tr>
+                    <th style={{textAlign:"left",padding:"8px 14px",color:"#555",fontWeight:500,fontSize:12}}>Question</th>
+                    {active.map(p=><th key={p.id} style={{padding:"8px 12px",color:"#c9a96e",fontWeight:500,fontSize:12,textAlign:"center",minWidth:80}}>{p.name}</th>)}
+                    <th style={{padding:"8px 12px",color:"#666",fontWeight:500,fontSize:12,textAlign:"center"}}>Avg</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {scoresheet.sections.map(sec=>(
+                    <React.Fragment key={sec.id}>
+                      <tr>
+                        <td colSpan={active.length+2} style={{padding:"14px 14px 4px",color:"#c9a96e",fontSize:11,fontWeight:600,letterSpacing:1,textTransform:"uppercase"}}>{sec.title}</td>
+                      </tr>
+                      {sec.questions.map((q,qi)=>{
+                        const scores=active.map(p=>p.data.scores?.[`${sec.id}_${q.id}`]||0);
+                        const avg=scores.reduce((a,b)=>a+b,0)/scores.length;
+                        return (
+                          <tr key={q.id} style={{background:"#1a1a1f"}}>
+                            <td style={{padding:"10px 14px",borderRadius:"8px 0 0 8px",maxWidth:260,fontSize:12,color:"#888"}}>Q{qi+1}: {q.text.substring(0,50)}{q.text.length>50?"…":""}</td>
+                            {active.map(p=>{
+                              const s=p.data.scores?.[`${sec.id}_${q.id}`]||0;
+                              return (
+                                <td key={p.id} style={{padding:"10px 12px",textAlign:"center"}}>
+                                  <div style={{width:30,height:30,borderRadius:"50%",margin:"0 auto",
+                                    background:s?"#c9a96e22":"#2e2e38",border:`2px solid ${s?"#c9a96e":"#2e2e38"}`,
+                                    display:"flex",alignItems:"center",justifyContent:"center",
+                                    fontWeight:700,color:s?"#c9a96e":"#444",fontSize:13}}>{s||"–"}</div>
+                                </td>
+                              );
+                            })}
+                            <td style={{padding:"10px 12px",textAlign:"center",borderRadius:"0 8px 8px 0",fontWeight:600,
+                              color:avg>=4?"#22c55e":avg>=2.5?"#c9a96e":"#ef4444"}}>{avg.toFixed(1)}</td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab==="comments" && (
+        <div className="fade-in" style={{display:"flex",flexDirection:"column",gap:18}}>
+          {active.length===0 ? <div style={{color:"#555",textAlign:"center",padding:"40px 0"}}>No comments yet.</div> :
+            active.map(p=>(
+              <Card key={p.id}>
+                <div style={{fontWeight:600,fontSize:16,marginBottom:14}}>{p.name}</div>
+                {p.data.strengths && <div style={{marginBottom:10}}>
+                  <div style={{fontSize:11,color:"#22c55e",letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Key Strengths</div>
+                  <div style={{fontSize:14,color:"#aaa",lineHeight:1.6}}>{p.data.strengths}</div>
+                </div>}
+                {p.data.concerns && <div style={{marginBottom:10}}>
+                  <div style={{fontSize:11,color:"#ef4444",letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Areas of Concern</div>
+                  <div style={{fontSize:14,color:"#aaa",lineHeight:1.6}}>{p.data.concerns}</div>
+                </div>}
+                {p.data.recommendation && <div style={{fontSize:13,color:"#c9a96e",marginBottom:10}}>Recommendation: <strong>{p.data.recommendation}</strong></div>}
+                {scoresheet.sections.map(sec=>sec.questions.filter(q=>p.data.notes?.[`${sec.id}_${q.id}`]).map(q=>(
+                  <div key={q.id} style={{marginTop:8,padding:"10px 14px",background:"#0f0f11",borderRadius:8,borderLeft:"3px solid #2e2e38"}}>
+                    <div style={{fontSize:11,color:"#555",marginBottom:3}}>{sec.title} · Q: {q.text.substring(0,45)}…</div>
+                    <div style={{fontSize:13,color:"#aaa"}}>{p.data.notes[`${sec.id}_${q.id}`]}</div>
+                  </div>
+                )))}
+              </Card>
+            ))
+          }
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JOIN
+// ═══════════════════════════════════════════════════════════════════════════════
+function Join({ onJoin }) {
+  const [sid, setSid] = useState("");
+  const [pid, setPid] = useState("");
+  const [error, setError] = useState("");
+  const [checking, setChecking] = useState(false);
+
+  const join = async () => {
+    if (!sid.trim()||!pid.trim()) return;
+    setChecking(true); setError("");
+    try {
+      const snap = await db.ref(`sessions/${sid.trim()}`).get();
+      if (!snap.exists()) { setError("Session not found."); setChecking(false); return; }
+      const sess = snap.val();
+      if (!sess.panelists?.find(p=>p.id===pid.trim())) { setError("Panelist ID not found."); setChecking(false); return; }
+      onJoin(sid.trim(), pid.trim());
+    } catch { setError("Connection error. Please try again."); }
+    setChecking(false);
+  };
+
+  return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
+      <div style={{maxWidth:400,width:"100%",textAlign:"center"}} className="fade-in">
+        <h2 style={{fontFamily:"'DM Serif Display',serif",fontSize:28,marginBottom:8}}>Join Session</h2>
+        <p style={{color:"#888",marginBottom:28,lineHeight:1.6}}>Enter the Session ID and Panelist ID shared by your organiser.</p>
+        <div style={{display:"flex",flexDirection:"column",gap:12,marginBottom:16}}>
+          <Input value={sid} onChange={setSid} placeholder="Session ID" style={{textAlign:"center",letterSpacing:1}} />
+          <Input value={pid} onChange={setPid} placeholder="Panelist ID (e.g. p1_abc123)" style={{textAlign:"center",letterSpacing:1}} />
+        </div>
+        {error && <div style={{fontSize:13,color:"#ef4444",marginBottom:12}}>{error}</div>}
+        <Btn onClick={join} disabled={checking||!sid.trim()||!pid.trim()} style={{width:"100%",padding:14}}>
+          {checking?"Checking…":"Open My Scoresheet →"}
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ROOT
+// ═══════════════════════════════════════════════════════════════════════════════
+function App() {
+  const [view, setView] = useState("landing");
+  const [sessionId, setSessionId] = useState(null);
+  const [panelistId, setPanelistId] = useState(null);
+  const [session, setSession] = useState(null);
+  const [scoresheet, setScoresheet] = useState(null);
+
+  // Listen to session in Firebase
+  useEffect(()=>{
+    if (!sessionId) return;
+    const ref = db.ref(`sessions/${sessionId}`);
+    ref.on("value", snap=>{
+      if (snap.exists()) { const d=snap.val(); setSession(d); setScoresheet(d.scoresheet); }
+    });
+    return ()=>ref.off();
+  },[sessionId]);
+
+  // Handle URL params on load
+  useEffect(()=>{
+    const p = new URLSearchParams(window.location.search);
+    const sid=p.get("session"), pid=p.get("panelist");
+    if (sid&&pid) { setSessionId(sid); setPanelistId(pid); setView("scoresheet"); }
+    else if (sid) { setSessionId(sid); setView("dashboard"); }
+  },[]);
+
+  const handleSetupComplete = async ({ scoresheet:ss, candidate, num }) => {
+    const sid = `sess_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+    const panelists = Array.from({length:num},(_,i)=>({
+      id:`p${i+1}_${Math.random().toString(36).slice(2,8)}`,
+      name:`Panelist ${i+1}`
+    }));
+    const sess = { id:sid, candidateName:candidate, panelists, createdAt:Date.now(), scoresheet:ss };
+    await db.ref(`sessions/${sid}`).set(sess);
+    setSessionId(sid); setSession(sess); setScoresheet(ss);
+    setView("ready");
+  };
+
+  const handleJoin = (sid,pid) => {
+    setSessionId(sid); setPanelistId(pid); setView("scoresheet");
+  };
+
+  const nav = (v) => {
+    if (v==="home") setView(session?"ready":"landing");
+    else setView(v);
+  };
+
+  return (
+    <div>
+      {view==="landing"   && <Landing onSetup={()=>setView("setup")} onJoin={()=>setView("join")} />}
+      {view==="setup"     && <Setup onComplete={handleSetupComplete} />}
+      {view==="ready"     && session && <SessionReady session={session} onDashboard={()=>setView("dashboard")} onPreview={()=>{setPanelistId(session.panelists[0].id);setView("scoresheet");}} />}
+      {view==="scoresheet"&& <Scoresheet panelistId={panelistId} sessionId={sessionId} session={session} scoresheet={scoresheet} />}
+      {view==="dashboard" && <Dashboard sessionId={sessionId} session={session} scoresheet={scoresheet} />}
+      {view==="join"      && <Join onJoin={handleJoin} />}
+
+      {!["landing","setup"].includes(view) && (
+        <div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",
+          background:"#1a1a1f",border:"1px solid #2e2e38",borderRadius:99,
+          padding:"8px 14px",display:"flex",gap:2,zIndex:100,boxShadow:"0 8px 32px rgba(0,0,0,0.6)"}}>
+          {[
+            {icon:"🏠",tip:"Home",     v:"home"},
+            {icon:"📊",tip:"Dashboard",v:"dashboard"},
+            {icon:"📝",tip:"Scoresheet",v:"scoresheet"},
+            {icon:"👥",tip:"Join",     v:"join"},
+          ].map(b=>(
+            <button key={b.v} onClick={()=>nav(b.v)} title={b.tip} style={{
+              width:40,height:40,borderRadius:"50%",border:"none",
+              background:"transparent",fontSize:18,cursor:"pointer",transition:"background 0.15s"
+            }}
+            onMouseOver={e=>e.currentTarget.style.background="#2e2e38"}
+            onMouseOut={e=>e.currentTarget.style.background="transparent"}>{b.icon}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
 </html>
